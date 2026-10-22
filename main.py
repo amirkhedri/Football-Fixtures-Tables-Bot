@@ -69,14 +69,19 @@ async def live_goal_monitor(context: ContextTypes.DEFAULT_TYPE):
             LIVE_SCORE_CACHE[match_id] = (h_score, a_score)
             scoring_team = m["home_team"] if h_score > prev_h else m["away_team"]
 
-            # Extract scorer & minute if the API tier includes goal details
+            # --- NEW: Enhanced Goalscorer Formatting ---
             goal_detail_line = ""
             if m.get("goals"):
+                # Grab the most recent goal added to the array
                 last_goal = m["goals"][-1]
-                scorer = last_goal.get("scorer", "")
-                minute = last_goal.get("minute", "")
-                if scorer and minute:
-                    goal_detail_line = f"👟 گلزن: {scorer} (دقیقه '{minute})\n"
+                scorer = last_goal.get("scorer", "بازیکن نامشخص")
+                minute = last_goal.get("minute", "?")
+                
+                # Prevent API edge cases where scorer name is missing
+                if not scorer:
+                    scorer = "بازیکن نامشخص"
+                    
+                goal_detail_line = f"👟 گلزن: {scorer} (دقیقه '{minute})\n"
 
             alert_text = (
                 f"⚽️ **گل برای {scoring_team}!**\n\n"
@@ -116,7 +121,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "✅ ربات فعال شد!\n"
         "• ارسال «کنداکتور» یا «نتایج زنده» برای تصویر بازی‌ها و نتایج لحظه‌ای\n"
-        "• ارسال «جدول لالیگا»، «جدول لیگ برتر انگلیس» و... برای مشاهده جدول\n"
+        "• ارسال «جدول لالیگا»، «جدول لیگ قهرمانان» و... برای مشاهده جدول\n"
         "• اعلام خودکار گل‌های تیم‌های مطرح اروپایی"
     )
 

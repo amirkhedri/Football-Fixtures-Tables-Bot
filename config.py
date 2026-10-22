@@ -22,6 +22,12 @@ TABLE_TRIGGERS = {
     "جدول سری آ": "SA", "serie a": "SA",
     "جدول بوندسلیگا": "BL1", "bundesliga": "BL1",
     "جدول لیگ فرانسه": "FL1", "ligue 1": "FL1",
+    
+    # --- NEW: Champions League Triggers ---
+    "جدول لیگ قهرمانان": "CL", 
+    "جدول چمپیونزلیگ": "CL", 
+    "cl": "CL", 
+    "champions league": "CL",
 }
 
 CONDUCTOR_TRIGGERS = {"کنداکتور", "نتایج زنده", "بازی های امروز", "live", "matches"}
