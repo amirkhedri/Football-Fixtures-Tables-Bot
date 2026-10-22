@@ -125,7 +125,7 @@ def get_league_standings(league_code: str) -> dict:
         print(f"Error fetching standings: {e}")
         return None
 def get_secondary_matches(date_iso: str) -> list:
-    """Fetches Europa League and Nations League for the conductor only."""
+    """Fetches Europa League and Nations League directly."""
     import os
     import requests
     
@@ -133,27 +133,27 @@ def get_secondary_matches(date_iso: str) -> list:
     if not api_key:
         return []
         
-    url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
     headers = {"x-apisports-key": api_key}
+    season = date_iso.split("-")[0] # Extract the year (e.g., 2026)
     
-    try:
-        response = requests.get(url, headers=headers, timeout=10)
-        data = response.json()
-        
-        TARGET_LEAGUES = {
-            3: "لیگ اروپا",
-            5: "لیگ ملت‌های اروپا"
-        }
-        
-        results = []
-        for item in data.get("response", []):
-            league_id = item["league"]["id"]
-            if league_id in TARGET_LEAGUES:
+    TARGET_LEAGUES = {
+        3: "لیگ اروپا",
+        5: "لیگ ملت‌های اروپا"
+    }
+    
+    results = []
+    # Make a tiny, specific request for just these two leagues
+    for league_id, league_name in TARGET_LEAGUES.items():
+        url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}&league={league_id}&season={season}"
+        try:
+            response = requests.get(url, headers=headers, timeout=5)
+            data = response.json()
+            
+            for item in data.get("response", []):
                 fixture = item["fixture"]
                 teams = item["teams"]
                 goals = item["goals"]
                 
-                # Convert status to match our bot's format
                 status_short = fixture["status"]["short"]
                 if status_short in ["FT", "AET", "PEN"]:
                     status = "FINISHED"
@@ -161,17 +161,29 @@ def get_secondary_matches(date_iso: str) -> list:
                     status = "IN_PLAY"
                 else:
                     status = "TIMED"
+                
+                # FIX 1: Convert the time format to perfectly match the main API
+                # This ensures your date_converter can read the kickoff time!
+                raw_date = fixture["date"]
+                if raw_date.endswith("+00:00"):
+                    raw_date = raw_date.replace("+00:00", "Z")
                     
                 results.append({
                     "id": fixture["id"],
                     "status": status,
-                    "utcDate": fixture["date"],
+                    "utcDate": raw_date,
                     "home_team": teams["home"]["name"],
                     "away_team": teams["away"]["name"],
+                    # FIX 2: Pass the crest/logo URLs so the image renderer can draw them!
+                    "home_crest": teams["home"]["logo"],
+                    "away_crest": teams["away"]["logo"],
+                    "home_logo": teams["home"]["logo"],
+                    "away_logo": teams["away"]["logo"],
                     "home_score": goals["home"] if goals["home"] is not None else 0,
                     "away_score": goals["away"] if goals["away"] is not None else 0,
-                    "league_name": TARGET_LEAGUES[league_id],
+                    "league_name": league_name,
                 })
-        return results
-    except Exception:
-        return []
+        except Exception:
+            continue
+            
+    return results
