@@ -132,6 +132,21 @@ async def run_cron():
     today_iso = now.date().isoformat()
     
     matches = get_daily_matches(today_iso)
+    
+    # --- RESOURCE OPTIMIZATION ---
+    # Check if we actually need to connect to the database right now.
+    is_morning_broadcast = (now.hour == 8 and now.minute == 30)
+    has_active_famous_match = any(
+        is_famous_match(m) and m["status"] in ("IN_PLAY", "PAUSED") 
+        for m in matches
+    )
+    
+    # If nothing is happening, exit immediately so the Neon database stays asleep.
+    if not is_morning_broadcast and not has_active_famous_match:
+        return {"status": "skipped - database asleep"}
+        
+    # -----------------------------
+    # Only connects to Neon if there is a live game or morning broadcast
     groups = await load_groups()
     
     # 1. Live Goal Monitor
@@ -172,7 +187,7 @@ async def run_cron():
                 await update_cached_score(match_id, h_score, a_score)
 
     # 2. Morning Broadcast (Runs only when pinged between 08:30 and 08:31)
-    if now.hour == 8 and now.minute == 30:
+    if is_morning_broadcast:
         if matches:
             photo_stream = draw_conductor(matches, target_date=today_iso)
             photo_bytes = photo_stream.getvalue()
@@ -182,4 +197,4 @@ async def run_cron():
                 except Exception:
                     pass
 
-    return {"status": "success"}
+    return {"status": "success - database used"}
