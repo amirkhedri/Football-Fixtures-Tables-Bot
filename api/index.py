@@ -7,10 +7,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import asyncpg
 
 from config import TELEGRAM_BOT_TOKEN, TABLE_TRIGGERS, CONDUCTOR_TRIGGERS, FAMOUS_TEAMS
-from services.api_fetcher import get_daily_matches, get_league_standings
+# CHANGED: Added get_secondary_matches to the import
+from services.api_fetcher import get_daily_matches, get_league_standings, get_secondary_matches
 from services.image_renderer import draw_conductor, draw_table
 
-# Vercel will inject this securely from your environment variables
 DATABASE_URL = os.getenv("DATABASE_URL")
 
 app = FastAPI()
@@ -19,7 +19,6 @@ bot_app = Application.builder().token(TELEGRAM_BOT_TOKEN).updater(None).build()
 # --- Database Setup (Neon Postgres) ---
 async def get_db_pool():
     if not hasattr(get_db_pool, "pool"):
-        # We strip the extra Neon parameters just in case they conflict with asyncpg
         clean_url = DATABASE_URL.split("?")[0] + "?sslmode=require"
         get_db_pool.pool = await asyncpg.create_pool(clean_url)
         async with get_db_pool.pool.acquire() as conn:
@@ -84,11 +83,18 @@ async def handle_text_triggers(update: Update, context: ContextTypes.DEFAULT_TYP
         status_msg = await update.message.reply_text("⏳ در حال دریافت کنداکتور...")
         try:
             today_iso = datetime.datetime.now(pytz.timezone("Asia/Tehran")).date().isoformat()
+            
+            # CHANGED: Fetch from both APIs and combine them
             matches = get_daily_matches(today_iso)
-            if not matches:
+            secondary_matches = get_secondary_matches(today_iso)
+            all_matches = matches + secondary_matches
+            
+            if not all_matches:
                 await status_msg.edit_text("امروز بازی مهمی در تقویم نیست.")
                 return
-            photo_stream = draw_conductor(matches, target_date=today_iso)
+            
+            # Draw the conductor with the combined list
+            photo_stream = draw_conductor(all_matches, target_date=today_iso)
             await update.message.reply_photo(photo=photo_stream, caption="📅 کنداکتور و نتایج زنده")
             await status_msg.delete()
         except Exception:
@@ -131,25 +137,23 @@ async def run_cron():
     now = datetime.datetime.now(tehran_tz)
     today_iso = now.date().isoformat()
     
+    # Primary API fetch (used for live tracking)
     matches = get_daily_matches(today_iso)
     
     # --- RESOURCE OPTIMIZATION ---
-    # Check if we actually need to connect to the database right now.
-    is_morning_broadcast = (now.hour == 8 and now.minute == 30)
+    is_morning_broadcast = (now.hour == 9 and now.minute == 0)
     has_active_famous_match = any(
         is_famous_match(m) and m["status"] in ("IN_PLAY", "PAUSED") 
         for m in matches
     )
     
-    # If nothing is happening, exit immediately so the Neon database stays asleep.
     if not is_morning_broadcast and not has_active_famous_match:
         return {"status": "skipped - database asleep"}
         
     # -----------------------------
-    # Only connects to Neon if there is a live game or morning broadcast
     groups = await load_groups()
     
-    # 1. Live Goal Monitor
+    # 1. Live Goal Monitor (Only loops through primary matches)
     for m in matches:
         if not is_famous_match(m): continue
         match_id = m["id"]
@@ -186,10 +190,14 @@ async def run_cron():
             if h_score != prev_h or a_score != prev_a:
                 await update_cached_score(match_id, h_score, a_score)
 
-    # 2. Morning Broadcast (Runs only when pinged between 08:30 and 08:31)
+    # 2. Morning Broadcast (Runs at 09:00 AM)
     if is_morning_broadcast:
-        if matches:
-            photo_stream = draw_conductor(matches, target_date=today_iso)
+        # CHANGED: Fetch secondary leagues strictly for the morning broadcast
+        secondary_matches = get_secondary_matches(today_iso)
+        all_matches = matches + secondary_matches
+        
+        if all_matches:
+            photo_stream = draw_conductor(all_matches, target_date=today_iso)
             photo_bytes = photo_stream.getvalue()
             for chat_id in groups:
                 try:

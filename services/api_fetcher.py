@@ -124,3 +124,54 @@ def get_league_standings(league_code: str) -> dict:
     except Exception as e:
         print(f"Error fetching standings: {e}")
         return None
+def get_secondary_matches(date_iso: str) -> list:
+    """Fetches Europa League and Nations League for the conductor only."""
+    import os
+    import requests
+    
+    api_key = os.getenv("API_FOOTBALL_KEY")
+    if not api_key:
+        return []
+        
+    url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
+    headers = {"x-apisports-key": api_key}
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        data = response.json()
+        
+        TARGET_LEAGUES = {
+            3: "لیگ اروپا",
+            5: "لیگ ملت‌های اروپا"
+        }
+        
+        results = []
+        for item in data.get("response", []):
+            league_id = item["league"]["id"]
+            if league_id in TARGET_LEAGUES:
+                fixture = item["fixture"]
+                teams = item["teams"]
+                goals = item["goals"]
+                
+                # Convert status to match our bot's format
+                status_short = fixture["status"]["short"]
+                if status_short in ["FT", "AET", "PEN"]:
+                    status = "FINISHED"
+                elif status_short in ["1H", "2H", "HT", "ET", "P"]:
+                    status = "IN_PLAY"
+                else:
+                    status = "TIMED"
+                    
+                results.append({
+                    "id": fixture["id"],
+                    "status": status,
+                    "utcDate": fixture["date"],
+                    "home_team": teams["home"]["name"],
+                    "away_team": teams["away"]["name"],
+                    "home_score": goals["home"] if goals["home"] is not None else 0,
+                    "away_score": goals["away"] if goals["away"] is not None else 0,
+                    "league_name": TARGET_LEAGUES[league_id],
+                })
+        return results
+    except Exception:
+        return []
