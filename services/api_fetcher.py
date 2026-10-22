@@ -128,6 +128,7 @@ def get_secondary_matches(date_iso: str) -> list:
     """Fetches Europa League and Nations League safely in a single request."""
     import os
     import requests
+    import pytz
     from datetime import datetime, timezone
 
     api_key = os.getenv("API_FOOTBALL_KEY")
@@ -136,6 +137,7 @@ def get_secondary_matches(date_iso: str) -> list:
 
     url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
     headers = {"x-apisports-key": api_key}
+    tehran_tz = pytz.timezone("Asia/Tehran")
 
     try:
         response = requests.get(url, headers=headers, timeout=15)
@@ -165,42 +167,39 @@ def get_secondary_matches(date_iso: str) -> list:
             else:
                 status = "TIMED"
 
-            # Build a clean UTC ISO string from the timestamp (most reliable)
+            # UTC datetime from the timestamp, then convert to Tehran (same as main API)
             ts = fixture.get("timestamp")
             if ts:
-                utc_date = (
-                    datetime.fromtimestamp(ts, tz=timezone.utc)
-                    .strftime("%Y-%m-%dT%H:%M:%SZ")
-                )
+                dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
             else:
-                utc_date = fixture["date"].replace("+00:00", "Z")
+                dt_utc = datetime.fromisoformat(fixture["date"].replace("Z", "+00:00"))
+            dt_tehran = dt_utc.astimezone(tehran_tz)
 
-            league_logo = league.get("logo")
+            time_str = dt_tehran.strftime("%H:%M")
+            utc_date = dt_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+            league_logo = league.get("logo", "")
 
             results.append({
                 "id": fixture["id"],
+                "time": time_str,                      # <-- what your renderer reads
                 "status": status,
                 "utcDate": utc_date,
                 "minute": fixture["status"].get("elapsed"),
                 "home_team": teams["home"]["name"],
                 "away_team": teams["away"]["name"],
-                "home_crest": teams["home"]["logo"],
-                "away_crest": teams["away"]["logo"],
+                "home_full_name": teams["home"]["name"],
+                "away_full_name": teams["away"]["name"],
                 "home_logo": teams["home"]["logo"],
                 "away_logo": teams["away"]["logo"],
+                "home_crest": teams["home"]["logo"],
+                "away_crest": teams["away"]["logo"],
                 "home_score": goals["home"] if goals["home"] is not None else 0,
                 "away_score": goals["away"] if goals["away"] is not None else 0,
+                "goals": [],
                 "league_name": TARGET_LEAGUES[league_id],
-                # Competition logo, under several keys so your renderer finds it
                 "league_logo": league_logo,
-                "competition_logo": league_logo,
-                "competition_emblem": league_logo,
-                "competition": {
-                    "id": league_id,
-                    "name": TARGET_LEAGUES[league_id],
-                    "emblem": league_logo,
-                },
             })
-        return results
+
+        return sorted(results, key=lambda x: x["time"])
     except Exception:
         return []
