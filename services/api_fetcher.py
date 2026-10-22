@@ -128,61 +128,79 @@ def get_secondary_matches(date_iso: str) -> list:
     """Fetches Europa League and Nations League safely in a single request."""
     import os
     import requests
-    
+    from datetime import datetime, timezone
+
     api_key = os.getenv("API_FOOTBALL_KEY")
     if not api_key:
         return []
-        
-    # Reverting to the broad date query since we know it bypasses the free-tier filters!
+
     url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
     headers = {"x-apisports-key": api_key}
-    
+
     try:
-        # Increased timeout to ensure Vercel has plenty of time to read the data
         response = requests.get(url, headers=headers, timeout=15)
         data = response.json()
-        
+
         TARGET_LEAGUES = {
             3: "لیگ اروپا",
-            5: "لیگ ملت‌های اروپا"
+            5: "لیگ ملت‌های اروپا",
         }
-        
+
         results = []
         for item in data.get("response", []):
-            league_id = item["league"]["id"]
-            if league_id in TARGET_LEAGUES:
-                fixture = item["fixture"]
-                teams = item["teams"]
-                goals = item["goals"]
-                
-                status_short = fixture["status"]["short"]
-                if status_short in ["FT", "AET", "PEN"]:
-                    status = "FINISHED"
-                elif status_short in ["1H", "2H", "HT", "ET", "P"]:
-                    status = "IN_PLAY"
-                else:
-                    status = "TIMED"
-                    
-                # FIX 1: Time format aligned perfectly with main API
-                raw_date = fixture["date"]
-                if raw_date.endswith("+00:00"):
-                    raw_date = raw_date.replace("+00:00", "Z")
-                    
-                results.append({
-                    "id": fixture["id"],
-                    "status": status,
-                    "utcDate": raw_date,
-                    "home_team": teams["home"]["name"],
-                    "away_team": teams["away"]["name"],
-                    # FIX 2: Crest/Logo URLs mapped for your renderer
-                    "home_crest": teams["home"]["logo"],
-                    "away_crest": teams["away"]["logo"],
-                    "home_logo": teams["home"]["logo"],
-                    "away_logo": teams["away"]["logo"],
-                    "home_score": goals["home"] if goals["home"] is not None else 0,
-                    "away_score": goals["away"] if goals["away"] is not None else 0,
-                    "league_name": TARGET_LEAGUES[league_id],
-                })
+            league = item["league"]
+            league_id = league["id"]
+            if league_id not in TARGET_LEAGUES:
+                continue
+
+            fixture = item["fixture"]
+            teams = item["teams"]
+            goals = item["goals"]
+
+            status_short = fixture["status"]["short"]
+            if status_short in ["FT", "AET", "PEN"]:
+                status = "FINISHED"
+            elif status_short in ["1H", "2H", "HT", "ET", "BT", "P", "LIVE"]:
+                status = "IN_PLAY"
+            else:
+                status = "TIMED"
+
+            # Build a clean UTC ISO string from the timestamp (most reliable)
+            ts = fixture.get("timestamp")
+            if ts:
+                utc_date = (
+                    datetime.fromtimestamp(ts, tz=timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")
+                )
+            else:
+                utc_date = fixture["date"].replace("+00:00", "Z")
+
+            league_logo = league.get("logo")
+
+            results.append({
+                "id": fixture["id"],
+                "status": status,
+                "utcDate": utc_date,
+                "minute": fixture["status"].get("elapsed"),
+                "home_team": teams["home"]["name"],
+                "away_team": teams["away"]["name"],
+                "home_crest": teams["home"]["logo"],
+                "away_crest": teams["away"]["logo"],
+                "home_logo": teams["home"]["logo"],
+                "away_logo": teams["away"]["logo"],
+                "home_score": goals["home"] if goals["home"] is not None else 0,
+                "away_score": goals["away"] if goals["away"] is not None else 0,
+                "league_name": TARGET_LEAGUES[league_id],
+                # Competition logo, under several keys so your renderer finds it
+                "league_logo": league_logo,
+                "competition_logo": league_logo,
+                "competition_emblem": league_logo,
+                "competition": {
+                    "id": league_id,
+                    "name": TARGET_LEAGUES[league_id],
+                    "emblem": league_logo,
+                },
+            })
         return results
     except Exception:
         return []
