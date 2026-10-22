@@ -1,0 +1,11 @@
+python-telegram-bot>=21.0
+fastapi
+uvicorn
+asyncpg
+requests
+Pillow
+jdatetime
+arabic-reshaper
+python-bidi
+python-dotenv
+pytz

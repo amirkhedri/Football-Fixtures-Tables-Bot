@@ -1,0 +1,17 @@
+# Environments
+.env
+
+# Local Database
+groups.json
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# Project Cache
+assets/cache/
