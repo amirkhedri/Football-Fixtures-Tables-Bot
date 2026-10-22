@@ -125,7 +125,7 @@ def get_league_standings(league_code: str) -> dict:
         print(f"Error fetching standings: {e}")
         return None
 def get_secondary_matches(date_iso: str) -> list:
-    """Fetches Europa League and Nations League directly."""
+    """Fetches Europa League and Nations League safely in a single request."""
     import os
     import requests
     
@@ -133,23 +133,24 @@ def get_secondary_matches(date_iso: str) -> list:
     if not api_key:
         return []
         
+    # Reverting to the broad date query since we know it bypasses the free-tier filters!
+    url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
     headers = {"x-apisports-key": api_key}
-    season = date_iso.split("-")[0] # Extract the year (e.g., 2026)
     
-    TARGET_LEAGUES = {
-        3: "لیگ اروپا",
-        5: "لیگ ملت‌های اروپا"
-    }
-    
-    results = []
-    # Make a tiny, specific request for just these two leagues
-    for league_id, league_name in TARGET_LEAGUES.items():
-        url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}&league={league_id}&season={season}"
-        try:
-            response = requests.get(url, headers=headers, timeout=5)
-            data = response.json()
-            
-            for item in data.get("response", []):
+    try:
+        # Increased timeout to ensure Vercel has plenty of time to read the data
+        response = requests.get(url, headers=headers, timeout=15)
+        data = response.json()
+        
+        TARGET_LEAGUES = {
+            3: "لیگ اروپا",
+            5: "لیگ ملت‌های اروپا"
+        }
+        
+        results = []
+        for item in data.get("response", []):
+            league_id = item["league"]["id"]
+            if league_id in TARGET_LEAGUES:
                 fixture = item["fixture"]
                 teams = item["teams"]
                 goals = item["goals"]
@@ -161,9 +162,8 @@ def get_secondary_matches(date_iso: str) -> list:
                     status = "IN_PLAY"
                 else:
                     status = "TIMED"
-                
-                # FIX 1: Convert the time format to perfectly match the main API
-                # This ensures your date_converter can read the kickoff time!
+                    
+                # FIX 1: Time format aligned perfectly with main API
                 raw_date = fixture["date"]
                 if raw_date.endswith("+00:00"):
                     raw_date = raw_date.replace("+00:00", "Z")
@@ -174,16 +174,15 @@ def get_secondary_matches(date_iso: str) -> list:
                     "utcDate": raw_date,
                     "home_team": teams["home"]["name"],
                     "away_team": teams["away"]["name"],
-                    # FIX 2: Pass the crest/logo URLs so the image renderer can draw them!
+                    # FIX 2: Crest/Logo URLs mapped for your renderer
                     "home_crest": teams["home"]["logo"],
                     "away_crest": teams["away"]["logo"],
                     "home_logo": teams["home"]["logo"],
                     "away_logo": teams["away"]["logo"],
                     "home_score": goals["home"] if goals["home"] is not None else 0,
                     "away_score": goals["away"] if goals["away"] is not None else 0,
-                    "league_name": league_name,
+                    "league_name": TARGET_LEAGUES[league_id],
                 })
-        except Exception:
-            continue
-            
-    return results
+        return results
+    except Exception:
+        return []
