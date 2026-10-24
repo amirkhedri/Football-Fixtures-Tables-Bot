@@ -7,7 +7,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import asyncpg
 
 from config import TELEGRAM_BOT_TOKEN, TABLE_TRIGGERS, CONDUCTOR_TRIGGERS, FAMOUS_TEAMS
-# CHANGED: Added get_secondary_matches to the import
 from services.api_fetcher import get_daily_matches, get_league_standings, get_secondary_matches
 from services.image_renderer import draw_conductor, draw_table
 
@@ -22,6 +21,7 @@ async def get_db_pool():
         clean_url = DATABASE_URL.split("?")[0] + "?sslmode=require"
         get_db_pool.pool = await asyncpg.create_pool(clean_url)
         async with get_db_pool.pool.acquire() as conn:
+            # Added alerts_enabled to allow users to mute live goals
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS football_groups (
                     chat_id BIGINT PRIMARY KEY
@@ -31,14 +31,16 @@ async def get_db_pool():
                     home_score INT,
                     away_score INT
                 );
+                ALTER TABLE football_groups ADD COLUMN IF NOT EXISTS alerts_enabled BOOLEAN DEFAULT TRUE;
             """)
     return get_db_pool.pool
 
 async def load_groups() -> list:
     pool = await get_db_pool()
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT chat_id FROM football_groups")
-        return [row["chat_id"] for row in rows]
+        # Returns dictionaries with both chat_id and their alert preference
+        rows = await conn.fetch("SELECT chat_id, alerts_enabled FROM football_groups")
+        return [{"chat_id": row["chat_id"], "alerts_enabled": row["alerts_enabled"]} for row in rows]
 
 async def save_group(chat_id: int):
     pool = await get_db_pool()
@@ -72,6 +74,18 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await save_group(chat.id)
     await update.message.reply_text("✅ ربات فعال شد! با موفقیت به سرورهای ابری متصل شدیم.")
 
+async def mute_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE football_groups SET alerts_enabled = FALSE WHERE chat_id = $1", update.effective_chat.id)
+    await update.message.reply_text("🔕 ارسال خودکار و زنده گل‌ها برای این چت غیرفعال شد.\nشما همچنان کنداکتور صبح و نتایج شبانه را دریافت خواهید کرد.")
+
+async def unmute_goals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pool = await get_db_pool()
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE football_groups SET alerts_enabled = TRUE WHERE chat_id = $1", update.effective_chat.id)
+    await update.message.reply_text("🔔 ارسال خودکار و زنده گل‌ها برای این چت فعال شد.")
+
 async def handle_text_triggers(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message or not update.message.text: return
     chat = update.effective_chat
@@ -84,16 +98,14 @@ async def handle_text_triggers(update: Update, context: ContextTypes.DEFAULT_TYP
         try:
             today_iso = datetime.datetime.now(pytz.timezone("Asia/Tehran")).date().isoformat()
             
-            # CHANGED: Fetch from both APIs and combine them
             matches = get_daily_matches(today_iso)
             secondary_matches = get_secondary_matches(today_iso)
-            all_matches = matches + secondary_matches
+            all_matches = sorted(matches + secondary_matches, key=lambda x: x["time"])
             
             if not all_matches:
                 await status_msg.edit_text("امروز بازی مهمی در تقویم نیست.")
                 return
             
-            # Draw the conductor with the combined list
             photo_stream = draw_conductor(all_matches, target_date=today_iso)
             await update.message.reply_photo(photo=photo_stream, caption="📅 کنداکتور و نتایج زنده")
             await status_msg.delete()
@@ -120,6 +132,8 @@ async def handle_text_triggers(update: Update, context: ContextTypes.DEFAULT_TYP
 async def on_startup():
     await bot_app.initialize()
     bot_app.add_handler(CommandHandler("start", start_command))
+    bot_app.add_handler(CommandHandler("mute_goals", mute_goals))
+    bot_app.add_handler(CommandHandler("unmute_goals", unmute_goals))
     bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_triggers))
 
 @app.post("/api/webhook")
@@ -135,25 +149,34 @@ async def run_cron():
     """External cron service pings this every minute to check live goals."""
     tehran_tz = pytz.timezone("Asia/Tehran")
     now = datetime.datetime.now(tehran_tz)
-    today_iso = now.date().isoformat()
     
-    # Primary API fetch (used for live tracking)
-    matches = get_daily_matches(today_iso)
-    
-    # --- RESOURCE OPTIMIZATION ---
     is_morning_broadcast = (now.hour == 9 and now.minute == 0)
+    is_midnight_broadcast = (now.hour == 0 and now.minute == 0)
+    
+    # Crucial: At 00:00, the date has rolled over to tomorrow. 
+    # We must step back by 1 hour to fetch the matches that just finished "today".
+    if is_midnight_broadcast:
+        target_date_iso = (now - datetime.timedelta(hours=1)).date().isoformat()
+    else:
+        target_date_iso = now.date().isoformat()
+    
+    matches = get_daily_matches(target_date_iso)
+    
     has_active_famous_match = any(
         is_famous_match(m) and m["status"] in ("IN_PLAY", "PAUSED") 
         for m in matches
     )
     
-    if not is_morning_broadcast and not has_active_famous_match:
+    if not (is_morning_broadcast or is_midnight_broadcast or has_active_famous_match):
         return {"status": "skipped - database asleep"}
         
-    # -----------------------------
     groups = await load_groups()
     
-    # 1. Live Goal Monitor (Only loops through primary matches)
+    # Separate users: those who want live alerts vs. everyone
+    alert_chat_ids = [g["chat_id"] for g in groups if g["alerts_enabled"] is True]
+    all_chat_ids = [g["chat_id"] for g in groups]
+    
+    # 1. Live Goal Monitor
     for m in matches:
         if not is_famous_match(m): continue
         match_id = m["id"]
@@ -181,7 +204,8 @@ async def run_cron():
                           f"🔥 {m['home_team']} {h_score} - {a_score} {m['away_team']}\n"
                           f"{goal_detail_line}🏆 {m['league_name']}")
             
-            for chat_id in groups:
+            # Send ONLY to users who have not muted goals
+            for chat_id in alert_chat_ids:
                 try:
                     await bot_app.bot.send_message(chat_id=chat_id, text=alert_text, parse_mode="Markdown")
                 except Exception:
@@ -190,18 +214,21 @@ async def run_cron():
             if h_score != prev_h or a_score != prev_a:
                 await update_cached_score(match_id, h_score, a_score)
 
-    # 2. Morning Broadcast (Runs at 09:00 AM)
-    if is_morning_broadcast:
-        # CHANGED: Fetch secondary leagues strictly for the morning broadcast
-        secondary_matches = get_secondary_matches(today_iso)
-        all_matches = matches + secondary_matches
+    # 2. Morning & Midnight Broadcasts
+    if is_morning_broadcast or is_midnight_broadcast:
+        secondary_matches = get_secondary_matches(target_date_iso)
+        all_matches = sorted(matches + secondary_matches, key=lambda x: x["time"])
         
         if all_matches:
-            photo_stream = draw_conductor(all_matches, target_date=today_iso)
+            photo_stream = draw_conductor(all_matches, target_date=target_date_iso)
             photo_bytes = photo_stream.getvalue()
-            for chat_id in groups:
+            
+            caption = "📅 برنامه بازی‌های مهم امروز" if is_morning_broadcast else "🏁 نتایج نهایی بازی‌های امروز"
+            
+            # Send to ALL users, even if they muted live goals
+            for chat_id in all_chat_ids:
                 try:
-                    await bot_app.bot.send_photo(chat_id=chat_id, photo=photo_bytes, caption="📅 برنامه بازی‌های مهم امروز")
+                    await bot_app.bot.send_photo(chat_id=chat_id, photo=photo_bytes, caption=caption)
                 except Exception:
                     pass
 

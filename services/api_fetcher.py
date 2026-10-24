@@ -135,7 +135,8 @@ def get_secondary_matches(date_iso: str) -> list:
     if not api_key:
         return []
 
-    url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}"
+    # FIX 1: Added timezone=Asia/Tehran so evening/night matches don't get lost in UTC conversion
+    url = f"https://v3.football.api-sports.io/fixtures?date={date_iso}&timezone=Asia/Tehran"
     headers = {"x-apisports-key": api_key}
     tehran_tz = pytz.timezone("Asia/Tehran")
 
@@ -167,12 +168,12 @@ def get_secondary_matches(date_iso: str) -> list:
             else:
                 status = "TIMED"
 
-            # UTC datetime from the timestamp, then convert to Tehran (same as main API)
             ts = fixture.get("timestamp")
             if ts:
                 dt_utc = datetime.fromtimestamp(ts, tz=timezone.utc)
             else:
                 dt_utc = datetime.fromisoformat(fixture["date"].replace("Z", "+00:00"))
+            
             dt_tehran = dt_utc.astimezone(tehran_tz)
 
             time_str = dt_tehran.strftime("%H:%M")
@@ -181,7 +182,7 @@ def get_secondary_matches(date_iso: str) -> list:
 
             results.append({
                 "id": fixture["id"],
-                "time": time_str,                      # <-- what your renderer reads
+                "time": time_str,
                 "status": status,
                 "utcDate": utc_date,
                 "minute": fixture["status"].get("elapsed"),
